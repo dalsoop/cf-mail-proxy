@@ -1,35 +1,44 @@
-.PHONY: test lint deploy status logs restart help
+.PHONY: test check build release deploy status logs restart clean help ci
 
-PROXY_VMID  ?= 50122
-PROXY_BIN   ?= /usr/local/bin/cf-mail-proxy
-PROXY_SVC   ?= cf-mail-proxy.service
-PROXY_UNIT  ?= /etc/systemd/system/$(PROXY_SVC)
-PROXY_ENV   ?= /etc/cf-mail-proxy.env
+PROXY_VMID ?= 50122
+PROXY_BIN  ?= /usr/local/bin/cf-mail-proxy
+PROXY_SVC  ?= cf-mail-proxy.service
+RELEASE_BIN = target/release/cf-mail-proxy
 
 help:
-	@awk 'BEGIN{FS=":.*##"; printf "targets:\n"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN{FS=":.*##"; printf "targets:\n"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-test: ## 단위 테스트 (pytest)
-	python3 -m pytest test_proxy.py -v
+check: ## cargo check (빠른 타입 검증)
+	cargo check
 
-lint: ## 문법·타입 점검 (py_compile)
-	python3 -m py_compile proxy.py test_proxy.py
+test: ## cargo test (17 단위 테스트)
+	cargo test
 
-deploy: test ## 테스트 통과 후 LXC $(PROXY_VMID)에 배포
-	@echo "=== proxy.py → LXC $(PROXY_VMID):$(PROXY_BIN) ==="
-	pct push $(PROXY_VMID) proxy.py $(PROXY_BIN)
+build: ## cargo build (debug)
+	cargo build
+
+release: ## cargo build --release (정적 strip+LTO 최적화)
+	cargo build --release
+	@ls -lh $(RELEASE_BIN)
+
+deploy: test release ## test + release build + LXC 배포 + 재시작
+	@echo "=== $(RELEASE_BIN) → LXC $(PROXY_VMID):$(PROXY_BIN) ==="
+	pct push $(PROXY_VMID) $(RELEASE_BIN) $(PROXY_BIN)
 	pct exec $(PROXY_VMID) -- systemctl restart $(PROXY_SVC)
 	@sleep 2
 	pct exec $(PROXY_VMID) -- systemctl is-active $(PROXY_SVC)
 	@echo "✓ 배포 완료"
 
 status: ## 프록시 상태
-	pct exec $(PROXY_VMID) -- systemctl status $(PROXY_SVC) --no-pager -n 5
+	pct exec $(PROXY_VMID) -- systemctl status $(PROXY_SVC) --no-pager -n 10
 
-logs: ## 실시간 로그
+logs: ## 실시간 로그 (Ctrl-C 종료)
 	pct exec $(PROXY_VMID) -- journalctl -u $(PROXY_SVC) -f
 
-restart: ## 프록시 재시작
+restart: ## 프록시 재시작만
 	pct exec $(PROXY_VMID) -- systemctl restart $(PROXY_SVC)
 
-ci: lint test ## CI 전체 체크 (GitHub Actions와 동일)
+clean: ## cargo clean (target 디렉토리 정리)
+	cargo clean
+
+ci: check test ## CI 체크 (GitHub Actions와 동일)
